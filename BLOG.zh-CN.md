@@ -1,593 +1,212 @@
-# 一个训练样本真的够吗？从 State Coverage 到 Useful State Coverage
+# 一个训练样本真的够吗？我从两篇 OPD 论文里想到的一个问题
 
-如果把 17K 条数学训练 Query 缩到 **1 条**，模型还能学到东西吗？
+最近看了两篇 On-Policy Distillation（OPD）的论文，我一直在想一个问题：我们过去说“高质量数据”的时候，到底是在说什么？
 
-直觉上，答案应该是否定的：数据太少，模型很快就会过拟合。
+这个问题是被一个很反常识的实验勾起来的。
 
-但 *Rethinking On-Policy Distillation of Large Language Models II: One Training Example* 做了这个极端实验。结果是：**一个 Query 也可以持续进行数百步 OPD，并恢复 full-data OPD 的大部分收益。** 更反直觉的是，单个 Query 的 rollout 覆盖了 full-data OPD 所访问 State Space 的约 **71.5%**；当 Query 增加到 16 个且保持语义多样时，State Coverage 达到约 **98.9%**，性能也基本追平 full-data。
+在 *Rethinking On-Policy Distillation of Large Language Models II: One Training Example* 里，作者把原本上万条数学训练 query 缩到只剩 **1 条**，然后继续做 OPD。按照常见直觉，这应该很快过拟合：模型反复看到同一个问题，还能学到什么？
 
-这似乎指向一个很诱人的结论：
+但结果并不是这样。单个 query 依然能支撑数百步训练，并恢复 full-data OPD 的大部分收益。论文进一步观察到，这一个 query 在 rollout 过程中访问到的 state，竟然覆盖了 full-data OPD state space 的约 **71.5%**；换成 16 个语义多样的 query，coverage 可以到约 **98.9%**，性能也基本追平 full-data。
 
-> **高质量数据，也许根本不需要很多。**
+我第一次看到这个结果时，最直接的反应其实不是“以后只要一条数据了”，而是：**也许我们一直把训练数据的单位看错了。**
 
-但我更关心另一个问题：
+## Query 可能只是入口
 
-> **State 越多，训练效果就一定越好吗？**
+在 SFT 里，我们很自然地把一条数据理解成 Question → Answer。于是做数据工程时，会关心题目够不够多、领域够不够广、难度够不够丰富、答案是否正确。
 
-如果答案是否定的，那么真正值得研究的就不只是 State Coverage，而是：
-
-> **什么样的 State 才真正有学习价值？以及，我们能不能在正式训练前找到这些 State？**
-
-这篇文章想讨论的，就是这两个问题。
-
----
-
-## 一个 Query 怎么可能“包含”这么多训练数据？
-
-理解 One-Query OPD 之前，需要先换一个视角。
-
-在传统 SFT 中，我们通常把一条训练数据理解成：
-
-```text
-Question → Answer
-```
-
-因此做数据工程时，我们自然会关注：题目够不够多、领域够不够广、难度够不够丰富、答案对不对。
-
-但 OPD 不是这样工作的。
-
-OPD 先让 Student 自己 rollout：
+但 OPD 的训练过程不太一样。Student 先自己 rollout：
 
 $$
 y \sim \pi_S(\cdot|x)
 $$
 
-Teacher 也不只是给最终答案，而是在 Student 自己生成的每一个 prefix 上提供 token-level supervision。于是每一个 prefix 都对应一个 State：
+Teacher 再在 Student 实际生成的 prefix 上提供 token-level supervision。也就是说，每一个 prefix 都可以看成一个 state：
 
 $$
 s_t=(x,y_{<t})
 $$
 
-所以真正的训练过程更像：
+所以同一个 query，不是只对应一个训练样本。它可能产生几十条 rollout，每条 rollout 又包含很多中间 state。换句话说，query 更像一个起点，真正大量产生训练信号的是后面的 state。
 
-```text
-1 Query
-   ↓
-很多 Student Rollouts
-   ↓
-很多 Trajectories
-   ↓
-大量 Intermediate States
-   ↓
-Teacher 在每个 State 上提供监督
-```
+这也是为什么“一条 query”并不等于“只有一个训练状态”。
 
-从这个角度看，Query 更像一个 **State Generator 的 Seed**。
+我觉得 *One Training Example* 真正有意思的地方就在这里。它把注意力从 query 数量移到了 **Student 实际访问了哪些 state**。
 
-这也解释了为什么：
+不过，顺着这个解释往下想，我又觉得还差一步。
 
-$$
-\boxed{\text{Few Queries} \neq \text{Few Training States}}
-$$
+## State 多，就一定好吗？
 
-One-Query OPD 的关键，不是“一条数据神奇地包含了所有知识”，而是**同一个 Query 可以通过 on-policy rollout 不断诱导出新的训练状态**。
+假设两个 query 最后都产生了很多 state。
 
-这也是 2609.04172 最重要的启发之一：
+第一个 query 反复把模型带到简单算术、模板化解释、重复推理这些区域；第二个 query 虽然覆盖的 state 数量少一些，但里面包含几何证明中的错误路线、重新规划、验证和纠错。
 
-> OPD 中，真正值得关注的数据单位，可能不是 Query，而是 Student 实际访问到的 State。
+如果只看 raw state coverage，第一个 query 未必差。但直觉上，第二类 state 可能更值得花训练预算。
 
----
-
-## 但 State 多，就一定好吗？
-
-这里马上出现一个问题。
-
-假设我们看到三个 State。
-
-### State A：很正确，但 Student 已经会了
+再举一个更极端的例子。假设当前 state 是：
 
 ```text
 2 + 2 = ?
 ```
 
-Student：
+Student 对 4 的概率已经是 0.99，Teacher 是 0.995。这个 state 很“正确”，也很干净，但 Student 基本已经会了。继续在这里训练，能学到的东西很有限。
+
+反过来，如果 Student 在一道几何证明中明显走错了，而 Teacher 在当前步骤有一个很清晰、Student 尚未掌握的方向，这个 state 的训练价值就可能高很多。
+
+还有第三种情况：Student rollout 已经跑偏到一段非常奇怪的上下文，Teacher 和 Student 的分布差异可能很大，但这个差异未必对目标任务有任何帮助。
+
+所以我现在更愿意把 State Coverage 理解成一个**必要但还不够的统计量**。它告诉我们“模型去了哪里”，却没有告诉我们“这些地方值不值得学”。
+
+这时，另一篇 OPD 工作就变得很关键。
+
+## Teacher 有东西教，不代表 Student 学得进去
+
+*Rethinking On-Policy Distillation of Large Language Models: Phenomenology, Mechanism, and Recipe* 研究的是另一个问题：为什么有些 OPD 很成功，有些却不行？
+
+这篇论文里有一个我觉得很重要的观察：**Teacher 更强，并不等于它一定更适合作为 Teacher。**
+
+作者发现，成功的 OPD 不只是要求 Teacher 比 Student “知道得更多”，还要求两者在局部的 reasoning / token distribution 上有一定兼容性。换句话说，Teacher 给出的信号必须是 Student 能够利用的。
+
+这会直接打破一个很自然的想法：
 
 $$
-P_S(4)=0.99
+\text{Teacher-Student Gap 大} \Rightarrow \text{训练价值高}
 $$
 
-Teacher：
+这个推论并不总成立。
+
+Gap 很大，有可能说明 Teacher 确实知道 Student 不会的东西；也可能意味着两者已经处在完全不同的局部 policy 区域，Teacher 的监督虽然“信息很多”，但 Student 根本吸收不了。
+
+所以我觉得两篇论文刚好拼成了两半。
+
+2609 那篇在问：**这些 query 会把 Student 带到哪些 state？**
+
+2604 那篇在问：**到了这些 state 以后，Teacher 的监督 Student 能不能学进去？**
+
+把两者放在一起，一个很自然的问题就是：
+
+> 哪些 state 才真正值得 Student 去访问、去学习？
+
+我暂时把这个问题叫做 **Useful State Coverage**。
+
+## 什么样的 state 才算 useful？
+
+这里我还不想太早给一个“漂亮公式”。因为如果直接写成五个指标相乘，很容易看起来完整，但其实很多东西还没有被验证。
+
+更直观一点，我会先问几个问题。
+
+第一，这个 state 是不是新的？如果 Student 已经在类似区域来回访问了很多次，再多一次意义可能不大。
+
+第二，Teacher 在这里有没有 Student 还不会的东西？如果两者几乎已经一致，就没有多少 learning signal。
+
+第三，即使 Teacher 有新信息，Student 能不能学进去？这正是 2604 那篇提醒我们的地方。Information 不等于 exploitable information。
+
+第四，Teacher 在这个 state 上靠不靠谱？OPD 的 state 是 Student 自己生成的。rollout 越长，Student 越可能进入奇怪、低概率、甚至 off-manifold 的 prefix。Teacher 在这些位置给出的信号不一定和正常分布下同样可靠。
+
+最后，这个 state 和我们想提升的能力有没有关系？如果目标是数学推理，一个非常新、Teacher 也很确定的闲聊 state，价值仍然可能接近零。
+
+所以 Useful State 至少和下面这些因素有关：
+
+- Novelty：是否带来新的 state region；
+- Learning potential：Teacher 是否还有东西可教；
+- Exploitability：Student 是否能利用这个监督；
+- Teacher reliability：Teacher 在这个 prefix 上是否可信；
+- Task relevance：是否与目标能力相关。
+
+可以先把它写成一个很宽松的概念：
 
 $$
-P_T(4)=0.995
+U(s)=f(N(s), I(s), E(s), L(s), R(s))
 $$
 
-这是一个非常干净、非常正确的 State。
+但这里真正重要的可能不是这个公式，而是另外一点：**Useful State Coverage 仍然是 coverage。**
 
-但从训练角度看，它几乎没有新增信息。Student 已经会了。
+如果一个很有价值的 state region 已经被访问了 100 次，第 101 次显然不应该和第一次一样值钱。我们真正关心的是“又覆盖了多少新的、有学习价值的区域”，而不是把所有 state 分数简单相加。
 
-### State B：Student 还不会，而且 Teacher 有明确方向
+这也是为什么我更喜欢 “Useful State Coverage” 这个说法，而不是 “State Utility Score”。
 
-例如一道几何证明走到中间：
+## 更难的问题其实是：怎么在训练前找到这些 state？
+
+定义只是第一步。真正麻烦的是，state 不是静态存在的。
+
+同一条 query，给不同 Student，或者给同一个 Student 在训练的不同阶段，产生的 rollout 都可能不一样。于是 query 的价值天然是 Student-dependent 的。
+
+一条题今天可能非常有价值，因为它能把 Student 带到大量“不会但能学”的区域；训练几百步以后，这些 state 已经学会了，它的价值自然会下降。
+
+所以我现在越来越不喜欢这种静态表达：
 
 ```text
-已知 AB = AC，需要证明 ∠B = ∠C，下一步应该……
+这是一条高质量数据。
 ```
 
-Student：
-
-```text
-勾股定理          0.35
-等腰三角形性质    0.25
-作辅助线          0.20
-```
-
-Teacher：
-
-```text
-等腰三角形性质    0.80
-```
-
-这里 Teacher 明显拥有 Student 尚未掌握的局部知识。
-
-这样的 State 看起来更值得训练。
-
-### State C：Teacher 和 Student 差得很大，但 State 本身已经偏了
-
-```text
-banana banana @@@ random random ...
-```
-
-Teacher 和 Student 的分布差异可能很大，但这并不意味着这个 State 对数学能力有训练价值。
-
-所以，仅仅知道“这个 State 没见过”或者“Teacher 和 Student 差得很大”都不够。
-
-这意味着：
+在 OPD 里，更准确的说法可能是：
 
 $$
-\boxed{\text{State Coverage} \neq \text{Learning Utility}}
+\mathrm{Quality}(q\mid \pi_S,\pi_T,Q_{selected},\mathcal T)
 $$
 
-State Coverage 只能告诉我们 **模型去了哪里**，却没有告诉我们：
+也就是说，一条 query 好不好，要看当前 Student、Teacher、已经覆盖过哪些区域，以及我们想提升什么能力。
 
-> **这些地方里，哪些真的值得花训练预算去学？**
+那训练之前怎么判断？
 
----
+我觉得一个比较自然的办法是 **Pilot Rollout**。
 
-## 第二条线索：Teacher 有东西教，不代表 Student 学得进去
+假设我们手里有一万个候选 query。先不要全部拿去正式训练，而是冻结当前 Student，每条 query 只跑很少几次，例如 2～8 条 rollout。这样成本还可控，但已经能看到每条 query 大概会把 Student 带到什么地方。
 
-这时另一篇 OPD 工作就变得关键。
+然后再在这些 candidate states 上估计几个信号：Student 和 Teacher 差多少、两者高概率 token 是否兼容、Teacher 是否稳定、state 是否和目标任务相关、是否和已经选过的 state 重复。
 
-*Rethinking On-Policy Distillation of Large Language Models: Phenomenology, Mechanism, and Recipe*（arXiv:2604.13016）研究的不是“需要多少数据”，而是：
+到这里，数据选择就不再是“从 1 万条 query 里挑看起来最难或最不一样的那些”，而变成：
 
-> **为什么有些 OPD 成功，有些 OPD 失败？**
+> 哪些 query 最可能把当前 Student 带到新的、而且真正值得学习的区域？
 
-它观察到一个很重要的现象：
+我很喜欢把这一步叫做 **Training Before Training**。不是因为真的提前训练了一遍，而是正式投入训练预算之前，先侦察一下 state space。
 
-> **更强的 Teacher，并不一定是更好的 Teacher。**
+## 从选 Query，变成设计 State-Space Curriculum
 
-论文发现，OPD 是否成功至少和两件事有关：
+再往前一步，query selection 本身也应该是有条件的。
 
-1. Teacher 是否真的拥有 Student 尚未获得的 **new capabilities**；
-2. Teacher 和 Student 的 **thinking pattern 是否足够兼容**。
+假设 Q1 已经覆盖了一大片代数 reasoning state，那么另一条 query Q2 即使单独看也很“好”，如果它产生的 state 和 Q1 几乎一样，边际价值就不高。
 
-成功的 OPD 中，Teacher 和 Student 会在 Student 实际访问的 State 上逐渐对齐高概率 token；而在失败配置中，即使 Teacher benchmark 更强、Teacher-Student 差异也很明显，局部 token-level supervision 仍可能很难被 Student 利用。
+真正想最大化的其实是：加入一条新 query 后，**新增了多少 Useful State Coverage**。
 
-所以：
-
-$$
-\boxed{\text{Informative Signal} \neq \text{Exploitable Signal}}
-$$
-
-这对 Useful State 的定义非常重要。
-
-一个 State 上 Teacher 和 Student 差得很远，可能说明 Teacher 有新信息；也可能意味着两者局部 policy geometry 根本不兼容，Student 很难沿着这个监督方向有效更新。
-
-于是，两篇论文刚好拼成两块：
-
-```text
-Paper I (2604)
-到了一个 State 之后，Student 学得进去吗？
-
-Paper II (2609)
-一组 Query 会把 Student 带到哪些 State？
-```
-
-那么很自然的下一个问题就是：
-
-> **哪些 State 值得我们主动让 Student 去？**
-
----
-
-## 第一个核心问题：什么样的 State 才算 Useful？
-
-我更愿意先不用复杂公式，而是问五个直观问题：
-
-```text
-这个 State 是新的吗？
-        ↓
-Teacher 在这里有 Student 不会的东西吗？
-        ↓
-Student 能利用这个监督吗？
-        ↓
-Teacher 在这个 State 上仍然可靠吗？
-        ↓
-这个 State 和目标能力有关吗？
-```
-
-对应地，可以把 Useful State 拆成五个因素：
-
-- **Novelty**：是不是新增 State Region，而不是已有区域的重复访问？
-- **Information Gain**：Teacher 是否真的提供 Student 尚未掌握的信息？
-- **Exploitability**：Student 是否能把这个监督转化成有效更新？
-- **Teacher Reliability**：Student-induced prefix 已经偏离常见分布时，Teacher 的监督是否仍可信？
-- **Task Relevance**：这个 State 是否属于我们真正希望提升的能力？
-
-可以概括成：
+可以写成：
 
 $$
-U(s)=f\big(N(s),I(s),E(s),L(s),R(s)\big)
-$$
-
-但我不认为简单把五项直接相乘就是最终答案。
-
-更合理的方式可能是：**先 Gate，再排序。**
-
-例如，先过滤掉：
-
-- 与目标任务明显无关的 State；
-- Teacher 明显不可靠的 State；
-- Teacher 和 Student 极度不兼容、监督很难利用的 State。
-
-然后只在剩下的 State 中比较：
-
-> **还有多少新信息？又带来了多少新的有效覆盖？**
-
-这里还需要强调一点：Useful State Coverage 仍然是一个 **Coverage** 概念，而不是把所有 State Utility 简单相加。
-
-如果某个高价值 State Region 已经被反复访问 100 次，第 101 次的价值显然不应和第一次一样。
-
-因此可以把它写成：
-
-$$
-\mathrm{USC}(Q)
+\Delta USC(q)
 =
-\sum_{c\in\mathcal C}
- w_c\,g\big(n_c(Q)\big)
+USC(Q_{selected}\cup\{q\})-USC(Q_{selected})
 $$
 
-其中：
+这个想法一旦成立，数据集就很难再是固定的。
 
-- $c$ 表示一个 State Region / Cluster；
-- $w_c$ 表示该 Region 的学习价值；
-- $n_c(Q)$ 表示 Query 集合 $Q$ 对该 Region 的访问次数；
-- $g(\cdot)$ 是带饱和效应的 coverage function。
+Student 学会一批 state 之后，原来 useful 的区域会逐渐饱和；这时应该重新 rollout、重新评估，再去找新的 state。最后形成的更像一个循环：探索一些 state，学一段，再重新看哪里还有东西可学。
 
-直觉上：
+这已经不像传统的数据筛选，更像一种 **state-space curriculum**。
 
-```text
-第一次访问高价值 Region    → 很有价值
-第二次                       → 还有价值
-第 100 次                    → 边际价值很低
-```
+## 为什么我觉得 Agent 场景可能更有意思
 
-所以相比 Raw State Coverage：
+数学推理里的 state 还相对规整，通常是中间步骤、错误假设、验证、自我纠正这些东西。
 
-$$
-\text{State Coverage}=\text{Where did the student go?}
-$$
+Agent 的 state space 会复杂得多。一次任务里，模型可能遇到工具调用失败、权限不足、API timeout、返回格式异常、规划错误、重试、replan、memory conflict，甚至环境状态已经变化。
 
-Useful State Coverage 更想回答：
+这时，“我们有多少任务”可能就更加不是一个好的数据质量指标。
 
-$$
-\boxed{\text{How much valuable learning space did the student cover?}}
-$$
+一千个任务如果全部都是“调用成功 → 返回正常 → 给出答案”，覆盖的 agent behavior 可能非常窄；反而几十个任务，如果能稳定触发 failure、diagnosis、replan、retry 和 recovery，可能会提供更有价值的训练 state。
 
----
-
-## 第二个核心问题：训练前怎么知道哪些 State 是 Useful？
-
-这其实比定义本身更难。
-
-因为 State 不是静态存在的。
-
-它来自 Student 自己的 rollout：
-
-$$
-s\sim P(s\mid q,\pi_S)
-$$
-
-同一条 Query，对不同 Student，完全可能产生不同的 trajectories 和 States。
-
-所以只看 Query 文本本身，很难判断：
-
-> “这是一条高质量数据。”
-
-这也是 OPD 数据质量和传统 Dataset Quality 最大的区别之一。
-
-我更倾向把它写成：
-
-$$
-\boxed{
-\mathrm{Quality}
-\left(
-q\mid\pi_S,\pi_T,Q_{\mathrm{selected}},\mathcal T
-\right)
-}
-$$
-
-也就是说，一条 Query 是否高质量，取决于：
-
-- 当前 Student；
-- 当前 Teacher；
-- 已经覆盖了哪些 States；
-- 当前想提升什么能力。
-
-那么，训练前怎么估计它？
-
-一个很自然的办法是：**先进行一次便宜的 Pilot Rollout，再决定要不要正式训练。**
-
-假设有 10,000 条候选 Query。
-
-先冻结当前 Student，每个 Query 只做少量 rollout：
-
-$$
-K=2\sim8
-$$
-
-得到一批 Candidate States，再去估计：
-
-```text
-Candidate Queries
-        ↓
-Frozen Student
-        ↓
-Few Pilot Rollouts
-        ↓
-Candidate States
-        ↓
-Novel?
-Informative?
-Exploitable?
-Reliable?
-Relevant?
-        ↓
-Useful State Estimate
-        ↓
-State Clustering / Coverage
-        ↓
-Query Selection
-        ↓
-Full OPD
-```
-
-可以把它理解成一种：
-
-> **Training Before Training**
-
-我们不是一开始就消耗大量 Teacher inference 和 rollout budget，而是先侦察一下 State Space：
-
-> **哪些 Query 最有可能把当前 Student 带到真正值得学习的区域？**
-
----
-
-## 从 Useful State 到 Query Selection
-
-有了 Pilot Rollout 后，真正应该优化的也不是单条 Query 的绝对分数，而是它带来的 **边际 Useful State Coverage**。
-
-假设已经选了一组 Query：
-
-$$
-Q_{\mathrm{selected}}
-$$
-
-那么新 Query $q$ 的价值应该看：
-
-$$
-\Delta \mathrm{USC}(q)
-=
-\mathrm{USC}
-\left(Q_{\mathrm{selected}}\cup\{q\}\right)
--
-\mathrm{USC}
-\left(Q_{\mathrm{selected}}\right)
-$$
-
-这意味着：
-
-```text
-Q1 → 新增代数推理 State → 选
-Q2 → 与 Q1 高度重复     → 降权
-Q3 → 新增几何证明 State → 选
-Q4 → 新增错误恢复 State → 选
-```
-
-所以 OPD 数据选择的目标会从：
-
-```text
-选择“看起来多样”的 Query
-```
-
-逐渐变成：
-
-```text
-选择能够诱导出最大新增学习价值的 Query
-```
-
-这已经更接近 **State-Space Active Learning**，而不是传统的 Query-level Data Selection。
-
----
-
-## Useful State Coverage 还应该是动态的
-
-还有一个很容易被忽略的问题：
-
-> 今天有价值的 State，训练一段时间以后可能就没那么有价值了。
-
-假设训练前：
-
-$$
-D_{JS}(\pi_T,\pi_{S_0})=0.8
-$$
-
-Student 明显不会。
-
-训练一段时间后：
-
-$$
-D_{JS}(\pi_T,\pi_{S_t})=0.05
-$$
-
-说明这个区域已经基本被吸收。
-
-此时继续大量访问同一批 States，边际收益就会下降。
-
-于是数据选择本身也应该形成一个循环：
-
-```text
-Pilot
-  ↓
-Select Queries
-  ↓
-Train
-  ↓
-Re-Probe
-  ↓
-Re-Score States
-  ↓
-Select New Queries
-  ↓
-Continue Training
-```
-
-即：
-
-$$
-\boxed{\text{Explore} \rightarrow \text{Learn} \rightarrow \text{Re-score} \rightarrow \text{Explore}}
-$$
-
-最终得到的可能不再是一个静态 Dataset，而是一种：
-
-> **Student-dependent State-Space Curriculum**
-
----
-
-## 这件事到了 Agent 场景可能更有意思
-
-数学 reasoning 中的 State，大多还是：
-
-```text
-公式选择
-中间推理
-错误假设
-自我纠正
-结果验证
-```
-
-但 Agent 的 State Space 会复杂得多：
-
-```text
-正常工具调用
-工具调用失败
-API timeout
-权限不足
-返回 malformed
-工具选择错误
-规划失败
-重新规划
-memory conflict
-环境变化
-```
-
-这时传统的 Task Coverage 很可能更容易产生错觉。
-
-比如有 1000 个 Agent Task，但它们全部遵循：
-
-```text
-调用工具 → 成功 → 返回结果
-```
-
-那么表面上 Task 数量很多，实际访问的 State Region 可能非常窄。
-
-反过来，几十个能够触发：
-
-```text
-failure
-  ↓
-diagnosis
-  ↓
-replan
-  ↓
-retry
-  ↓
-recover
-```
-
-的任务，可能提供更丰富、更有价值的训练状态。
-
-所以 Agent 数据工程最终可能同样需要从：
-
-$$
-\text{Task Coverage}
-$$
-
-走向：
-
-$$
-\text{Agent State Coverage}
-$$
-
-进一步走向：
-
-$$
-\boxed{\text{Useful Agent State Coverage}}
-$$
-
----
+所以我觉得 Useful State Coverage 不一定只适用于数学 OPD。它更像是在问一个更一般的问题：**训练一个会行动的模型时，我们究竟希望它经历什么？**
 
 ## 最后
 
-*One Training Example* 最吸引人的地方，表面上是：
+*One Training Example* 最吸引人的标题当然是“一条训练样本也够”。但我现在觉得，它更有价值的地方，是逼着我们重新想“数据”到底是什么。
 
-> **一条 Query 也能训练。**
+在 on-policy learning 里，query 也许只是入口。真正决定模型学到什么的，是 rollout 把它带到了哪些 state，以及这些 state 上有没有它还不会、Teacher 又确实能教会它的东西。
 
-但我觉得它真正重要的地方，是迫使我们重新思考一个更基础的问题：
+所以，比“我们还需要多少高质量数据”更让我感兴趣的问题是：
 
-> **在 on-policy learning 里，到底什么才算“数据”？**
+> **怎样用尽可能少的探索预算，把模型带到最值得学习的地方？**
 
-如果 Query 只是 State Generator 的 Seed，那么数据工程真正应该关心的，也许就不再只是：
+我现在还不知道 Useful State Coverage 最终应该怎样定义，也不确定哪些 proxy 最可靠。Teacher-Student gap、token overlap、verifier、hidden-state clustering，这些都可能只解释其中一部分。
 
-> “我们有多少高质量 Query？”
-
-而是：
-
-> “这些 Query 会把 Student 带到哪里？”
-
-再结合 2604 关于 Teacher-Student compatibility 的结果，还需要继续问：
-
-> “到了那里以后，Teacher 有没有东西可以教？Student 又能不能真正学进去？”
-
-于是问题最终变成：
-
-$$
-\boxed{\text{Data Quality} \rightarrow \text{State Learning Utility}}
-$$
-
-而我认为接下来最值得验证的，不只是一个新的 coverage 指标，而是两件事：
-
-> **如何定义 Useful State？**
->
-> **如何用尽可能少的探索成本，在正式训练前找到它？**
-
-如果这两个问题能够回答，OPD 的数据选择可能会从 **Query Selection** 进一步变成一种真正的 **State-Space Exploration and Curriculum Design**。
-
-换句话说，下一个问题也许不再是：
-
-> **我们到底需要多少高质量数据？**
-
-而是：
-
-> **怎样用最少的探索预算，把模型带到最值得学习的地方？**
+但这恰恰是我觉得值得继续做实验的地方。
 
 ---
 

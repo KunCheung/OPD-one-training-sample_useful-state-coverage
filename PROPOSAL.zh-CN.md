@@ -1,799 +1,517 @@
 # Not All States Are Equal：从 State Coverage 到 Useful State Coverage
 
-## 0. 一句话 Idea
+## 0. 研究想法
 
-现有 OPD 工作分别回答了两个相邻问题：
+本文尝试从 **state space** 的视角重新理解 On-Policy Distillation（OPD）中的数据质量。
 
-- **Paper I（2604.13016）**：到了一个 state 之后，Teacher 的监督 **Student 能不能学进去**？
-- **Paper II（2609.04172）**：少量 query 能把 Student **带到哪些 state**？
+这个方向主要受到两篇工作的启发：
 
-本文进一步研究：
+- **Yaxuan Li et al.**  
+  *Rethinking On-Policy Distillation of Large Language Models: Phenomenology, Mechanism, and Recipe*  
+  arXiv:2604.13016, 2026  
+  https://arxiv.org/abs/2604.13016
 
-> **有限训练预算下，哪些 state 值得主动访问和学习？又应该选择哪些 query，才能诱导出这些高价值 state？**
+- **Zixuan Fu et al.**  
+  *Rethinking On-Policy Distillation of Large Language Models II: One Training Example*  
+  arXiv:2609.04172, 2026  
+  https://arxiv.org/abs/2609.04172
 
-核心观点：
+两篇工作分别提供了两个重要观察：
 
-$$
-\boxed{\text{Coverage tells us where the student goes; utility tells us where it is worth learning.}}
-$$
+1. **Teacher 有信息，不等于 Student 能利用这些信息。** OPD 是否成功与 Teacher–Student compatibility / exploitability 密切相关。
+2. **Query 很少，不等于训练 state 很少。** 一个 query 可以通过 Student rollout 诱导出大量不同 states；少量 query 也可以获得很高的 State Coverage。
 
-也就是说：**State Coverage 只描述“去了哪里”，并不等价于“那里值得学、Teacher 能教、Student 学得进去”。**
+这让我们自然地得到第三个问题：
 
----
+> **如果 query count 不是 OPD 数据规模最合适的度量，而 raw State Coverage 又没有区分 state 的学习价值，那么什么才应该被称为“高质量 OPD 数据”？**
 
-# 1. 研究背景：两篇 Rethinking OPD 工作分别解决了什么？
+本文的核心工作假设是：
 
-## 1.1 Paper I：OPD 的关键不是 Teacher 更强，而是监督是否可利用
+$$ \text{Data Quality} \rightarrow \text{State Learning Utility} $$
 
-**Yaxuan Li et al.**  
-*Rethinking On-Policy Distillation of Large Language Models: Phenomenology, Mechanism, and Recipe*  
-arXiv:2604.13016, 2026  
-https://arxiv.org/abs/2604.13016
+更具体地说，一条 query 的价值不只是由 query 本身决定，而取决于它让**当前 Student**访问到哪些 states，以及这些 states 是否真的提供新的、可靠且可利用的学习机会。
 
-该论文主要研究 **OPD 为什么有时成功、有时失败**。
-
-其核心发现包括：
-
-1. Student 与 Teacher 需要具有较兼容的 **thinking pattern**；
-2. Teacher 即使 benchmark 分数更高，也必须提供 Student 尚未见过的 **new capabilities**；
-3. 成功 OPD 中，Student 与 Teacher 会逐渐在 Student-visited states 上的高概率 token 集合上对齐；
-4. 一个较小的 shared high-probability token set 可以承载约 97%–99% 的概率质量；
-5. 对失败 OPD，论文提出 **off-policy cold start** 和 **teacher-aligned prompt selection** 等恢复策略。
-
-因此，这篇论文揭示：
-
-$$
-\boxed{\text{Teacher has information} \;\neq\; \text{Student can exploit the information}}
-$$
-
-仅仅看到 Teacher-Student gap 很大，并不能说明这个监督一定有训练价值。
+这仍然是一个 **working hypothesis**，而不是已经定型的 USC 公式。本文真正希望回答的问题之一，就是：**哪些 state-level signals 能够稳定预测实际 downstream learning gain？**
 
 ---
 
-## 1.2 Paper II：OPD 的数据单位可能不是 Query，而是 State
+# 1. A state-space view of OPD
 
-**Zixuan Fu et al.**  
-*Rethinking On-Policy Distillation of Large Language Models II: One Training Example*  
-arXiv:2609.04172, 2026  
-https://arxiv.org/abs/2609.04172
-
-这篇论文研究的是另一个问题：**OPD 到底需要多少训练 query？**
-
-它发现：
-
-- 单个 query 也可以持续训练数百步，并恢复 full-data OPD 的大部分收益；
-- 单个 query 的 rollout 可以覆盖 full-data OPD state space 的约 **71.5%**；
-- 16 个语义多样 query 的 state coverage 可达到约 **98.9%**，性能接近 full-data；
-- content-light template 和部分 off-domain query 也可以获得接近真实 query 的效果；
-- 因此 OPD 可能是 **data-overfed but algorithm-starved**。
-
-其核心视角是：
-
-$$
-\text{Query} \rightarrow \text{Trajectory} \rightarrow \text{State}
-$$
-
-一个 query 更像一个 **state generator 的 seed**。真正接受 dense teacher supervision 的，是 rollout 中大量的中间 state：
-
-$$
-s_t=(x,y_{<t})
-$$
-
-因此：
-
-$$
-\boxed{\text{Few Queries} \;\neq\; \text{Few Training States}}
-$$
-
----
-
-# 2. 两篇论文合起来留下的关键缺口
-
-Paper I 主要回答：
-
-> **Which supervision is learnable?**
-
-Paper II 主要回答：
-
-> **Which states are visited?**
-
-但仍然缺少一个问题：
-
-> **Which states are worth visiting?**
-
-这个问题很关键，因为：
-
-$$
-\boxed{\text{State Coverage} \neq \text{State Learning Utility}}
-$$
-
-覆盖到一个 state，并不意味着这个 state 值得投入 Teacher inference 和 Student update 预算。
-
-例如：
-
-### State A：有意义，但 Student 已经会了
+在 SFT 中，一条训练数据通常在训练开始前就已经固定：
 
 ```text
-2 + 2 =
+prompt → reference response
 ```
 
-如果 Student 和 Teacher 都几乎确定答案为 4，那么该 state 很干净，但 learning signal 很小。
+但 OPD 中，Student 首先从当前 policy rollout：
 
-### State B：Teacher-Student Gap 很大，但 Student 不一定学得进去
+$$ y \sim \pi_S(\cdot \mid x) $$
 
-Teacher 与 Student 的分布差异很大，并不代表梯度方向对 Student 有效。Paper I 已经说明，**informative signal 不等于 exploitable signal**。
+Teacher 再在 Student 实际生成的 prefix 上提供 token-level supervision。对第 $t$ 个 token，对应的 state 可以写为：
 
-### State C：覆盖新区域，但与目标能力无关
+$$ s_t = (x, y_{1:t-1}) $$
 
-例如训练 Math OPD 时 rollout 进入长篇闲聊或格式性 meta response。它可能提高 raw state coverage，却不提升目标能力。
+因此，一个 query 更像一个进入 state space 的 seed：
 
-### State D：Student 到达了 Teacher 不可靠的区域
+```text
+Query
+  ↓
+Student Rollout
+  ↓
+Trajectory
+  ↓
+Visited States
+  ↓
+Teacher Supervision
+```
 
-在长 trajectory、严重 off-policy prefix 或错误累积后的 state 上，Teacher continuation 未必仍然具有稳定优势。
+这意味着：
 
-因此，高质量 OPD 数据不能仅由“query 多样性”或“state 数量”定义。
+$$ \text{Few Queries} \neq \text{Few Training States} $$
+
+*One Training Example* 中单个 query 可达到约 71.5% 的 full-data State Coverage，16 个语义多样的 query 可达到约 98.9%，进一步说明 **query count 未必是 OPD 有效数据规模最合适的度量**。
+
+但 State Coverage 仍然只回答：
+
+> Student 去过哪些地方？
+
+它没有直接回答：
+
+> 这些地方是否真的值得学习？
 
 ---
 
-# 3. 核心研究命题：重新定义 OPD Data Quality
+# 2. Research gap：State Coverage 不等于 Learning Utility
 
-传统数据质量通常被理解为：正确、困难、多样、覆盖广。
+考虑三个简单的 state。
 
-但在 OPD 中，我们提出：
+| State | Student / Teacher 情况 | 直觉上的训练价值 |
+| --- | --- | --- |
+| `2 + 2 = ?` | Student 对 `4` 已经为 0.99，Teacher 为 0.995 | 低：Student 基本已掌握 |
+| 几何证明进入错误分支 | Student 犹豫，Teacher 对正确下一步有明显偏好 | 可能较高：存在新的局部监督 |
+| Rollout 已进入乱码或严重 off-task context | Teacher 与 Student gap 可能很大 | 不确定，甚至可能无价值 |
 
-$$
-\boxed{\text{Data Quality} \rightarrow \text{State Learning Utility}}
-$$
+这些 state 都可以被 raw State Coverage 统计，但显然不应被同等看待。
 
-而且 OPD 数据质量不是 query 的静态属性，而是相对于当前 Student、Teacher、已选数据和目标任务动态定义：
+与此同时，2604.13016 表明，较大的 Teacher–Student gap 也不一定代表更高学习价值。Teacher 更强、分布差异更大，都不保证 Student 能吸收该监督。
 
-$$
-\boxed{
-\mathrm{Quality}
-\left(
-q\mid \pi_S,\pi_T,Q_{\mathrm{selected}},\mathcal{T}
-\right)
-}
-$$
+所以至少需要区分：
+
+**Is there new information?**
+
+和：
+
+**Can the Student actually use it?**
+
+因此，我们把研究问题从：
+
+> “覆盖了多少 state？”
+
+推进到：
+
+> **“覆盖了多少对当前 Student 真正有学习价值的 state region？”**
+
+这就是本文对 **Useful State Coverage（USC）** 的工作性理解。
+
+---
+
+# 3. 核心命题：Data Quality 是条件性的
+
+传统数据工程通常把数据质量看成样本本身的静态属性：
+
+- 正确性；
+- 难度；
+- 领域；
+- 多样性；
+- 去重；
+- 覆盖度。
+
+但在 OPD 中，同一条 query 对不同 Student、不同训练阶段，可能具有完全不同的价值。
+
+因此更合理的表达是：
+
+$$ \mathrm{Quality}\!\left(q \mid \pi_S, \pi_T, Q_{\mathrm{selected}}, \mathcal{T}\right) $$
 
 其中：
 
 - $\pi_S$：当前 Student policy；
 - $\pi_T$：Teacher policy；
-- $Q_{\mathrm{selected}}$：当前已经选择和训练过的 query；
-- $\mathcal{T}$：目标任务或能力空间。
+- $Q_{\mathrm{selected}}$：已经选择或训练过的 query；
+- $\mathcal{T}$：目标任务 / 能力空间。
 
-因此，同一条 query 在训练早期可能很有价值，在 Student 已经掌握相应 state 后，其价值会显著下降。
-
----
-
-# 4. Useful State：哪些 state 才值得学习？
-
-我们认为 Useful State 至少应考虑五个维度。
-
-## 4.1 Novelty：是否带来新的 State Region
-
-来自 Paper II 的核心启发。
-
-如果一个 state 与当前已覆盖状态高度重复，则边际价值应降低：
-
-$$
-N_t(s)
-=
-1-
-\max_{s'\in S_t}
-\mathrm{sim}(h(s),h(s'))
-$$
-
-这里 $S_t$ 表示当前训练已经有效覆盖的 state 集合。
-
----
-
-## 4.2 Information Gain：Teacher 是否真的有新东西可教
-
-Teacher 比 Student 强，并不意味着在每一个局部 state 上都有新知识。
-
-定义局部信息增益 proxy：
-
-$$
-I_t(s)
-=
-D\left(
-\pi_T(\cdot|s),
-\pi_{S_t}(\cdot|s)
-\right)
-$$
-
-其中 $D$ 可以使用 JS divergence、top-k log-prob gap 等。
-
-但需要强调：
-
-$$
-I_t(s) \text{ 大} \;\not\Rightarrow\; s \text{ 一定 useful}
-$$
-
-因为 Paper I 已经说明，较大的 distribution gap 可能并不能被 Student 有效利用。
-
----
-
-## 4.3 Exploitability：Student 能否利用 Teacher 的信号
-
-这是相对于原 USC proposal 最重要的修改。
-
-我们引入：
-
-$$
-E_t(s)=\mathrm{Exploitability}(\pi_{S_t},\pi_T,s)
-$$
-
-可以考虑以下 proxy：
-
-- Student/Teacher top-k token overlap ratio；
-- overlap token probability mass；
-- shared high-probability token alignment；
-- 局部 gradient agreement / effective update magnitude；
-- entropy gap。
-
-例如一个简单的 overlap 指标：
-
-$$
-E_{\mathrm{overlap}}(s)
-=
-\frac{
-|\mathrm{TopK}(\pi_S)\cap\mathrm{TopK}(\pi_T)|
-}{k}
-$$
-
-更进一步，可以使用 probability-mass-weighted overlap，而不是只统计 token 数量。
-
-核心是区分：
-
-$$
-\boxed{\text{Informative Signal} \neq \text{Exploitable Signal}}
-$$
-
----
-
-## 4.4 Reliability：Teacher 在这个 Student-induced State 上是否仍可靠
-
-Student rollout 可能进入 Teacher 不熟悉的 prefix。
-
-尤其在：
-
-- long-horizon reasoning；
-- 多轮 Agent trajectory；
-- 错误逐步累积；
-- tool failure / retry；
-- off-policy state；
-
-Teacher 的局部监督质量可能下降。
-
-定义：
-
-$$
-L(s)=\mathrm{TeacherReliability}(s)
-$$
-
-可采用：
-
-- Teacher entropy；
-- 多次 Teacher sampling consistency；
-- verifier / execution feedback；
-- 多 Teacher agreement；
-- 在可验证任务上的 continuation correctness。
-
----
-
-## 4.5 Relevance：State 是否属于目标能力
-
-如果目标是 Math OPD，那么与数学能力完全无关的 state 不应因为 novelty 高而获得高权重。
-
-定义：
-
-$$
-R(s)=\mathrm{Relevance}(s,\mathcal{T})
-$$
-
-可以通过：
-
-- target-domain anchor embeddings；
-- lightweight classifier；
-- task-conditioned representation；
-- Teacher relevance judge。
-
----
-
-# 5. 从“直接相乘”改为“两阶段 Useful State 判定”
-
-原 proposal 简单定义：
-
-$$
-U(s)=I(s)\cdot C(s)\cdot R(s)\cdot N(s)
-$$
-
-这个形式虽然直观，但问题是：不同 proxy 的尺度不同，而且一个 noisy factor 会把整体 utility 放大或压到接近 0。
-
-因此新版建议使用 **Gate + Utility Score** 两阶段设计。
-
-## Stage A：过滤不可学习或不可靠 state
-
-定义有效 state 集合：
-
-$$
-\mathcal{S}_{\mathrm{valid}}
-=
-\left\{
- s:
-R(s)\ge\tau_R,
-L(s)\ge\tau_L,
-E_t(s)\ge\tau_E
-\right\}
-$$
-
-即先排除：
-
-- 与目标任务无关的 state；
-- Teacher 不可靠的 state；
-- Teacher 与 Student thinking pattern 严重不兼容、局部监督难以利用的 state。
-
-## Stage B：在有效 state 中衡量边际学习价值
-
-定义：
-
-$$
-U_t(s)
-=
-I_t(s)
-+
-\lambda N_t(s)
-$$
-
-或者进一步研究可学习的参数化组合：
-
-$$
-U_t(s)=f_\phi\left(I_t(s),N_t(s),E_t(s),L(s),R(s)\right)
-$$
-
-其中 $f_\phi$ 可以通过小规模真实 OPD gain 数据拟合。
-
-这样论文的重点不再是人为拍一个权重，而是研究：
-
-> **哪些 pre-training signals 最能预测真正的 downstream learning gain？**
-
----
-
-# 6. Useful State Coverage（USC）
-
-对候选 query pool，使用冻结的初始 Student 做少量 pilot rollout：
-
-$$
-q_i
-\rightarrow
-K\ \text{pilot rollouts}
-\rightarrow
-S(q_i)
-$$
-
-得到所有 candidate states 后，用 Teacher hidden representation 或其他 state encoder 得到：
-
-$$
-h(s)
-$$
-
-再聚类或进行 density-aware state partition：
-
-$$
-\mathcal{C}=\{c_1,c_2,\dots,c_M\}
-$$
-
-对每个 state cluster 定义 learning utility：
-
-$$
-w_t(c)
-=
-\mathbb{E}_{s\in c\cap\mathcal{S}_{\mathrm{valid}}}
-\left[U_t(s)\right]
-$$
-
-最终定义：
-
-$$
-\boxed{
-\mathrm{USC}_t(Q)
-=
-\sum_{c\in\mathcal{C}}
- w_t(c)
-\left(1-e^{-\beta n_c(Q)}\right)
-}
-$$
-
-其中 $n_c(Q)$ 表示 query set $Q$ 对 cluster $c$ 的有效访问次数。
-
-这一 saturation term 用于体现 diminishing return：同一 state region 被重复访问很多次，其边际价值应该逐步降低。
-
----
-
-# 7. Query 的价值：Expected Marginal Useful State Coverage
-
-最终不是直接给 query 打“质量分”，而是计算它相对于当前已选集合还能带来多少新价值：
-
-$$
-\Delta \mathrm{USC}_t(q\mid Q)
-=
-\mathrm{USC}_t(Q\cup\{q\})
--
-\mathrm{USC}_t(Q)
-$$
-
-进一步考虑 rollout 和 Teacher inference 成本：
-
-$$
-\boxed{
-q^*
-=
-\arg\max_q
-\frac{
-\Delta \mathrm{USC}_t(q\mid Q)
-}{
-\mathrm{Cost}(q)
-}
-}
-$$
-
-因此一个好的 query 不是“看起来复杂”，也不是“语义上与其他 query 不一样”，而是：
-
-> **能够以较低成本诱导 Student 进入新的、相关的、Teacher 可靠且 Student 能有效吸收监督的 state region。**
-
----
-
-# 8. 核心算法：Probe → Diagnose → Select → Train
-
-```text
-Candidate Query Pool
-        │
-        ▼
-Frozen Student Pilot Rollout
-        │
-        ▼
-Candidate States
-        │
-        ├── Novelty
-        ├── Information Gain
-        ├── Exploitability
-        ├── Teacher Reliability
-        └── Task Relevance
-        │
-        ▼
-Filter Invalid / Unlearnable States
-        │
-        ▼
-Estimate State Learning Utility
-        │
-        ▼
-Marginal Useful State Coverage
-        │
-        ▼
-Select Query Set
-        │
-        ▼
-Full OPD Training
-```
-
-这个过程只需要少量 pilot rollouts，不需要预先跑完整 full-data OPD，因此能够解决 Paper II 当前 State Coverage 依赖 full-data reference 的问题。
-
----
-
-# 9. Dynamic USC：数据质量随 Student 改变
-
-随着 Student 学习，同一个 state 的 utility 会变化。
-
-训练前：
-
-$$
-I_0(s) \text{ 很高}
-$$
-
-训练一段时间后：
-
-$$
-I_t(s) \rightarrow 0
-$$
-
-说明这个 state 已经被吸收。
+一条 query 在训练早期可能不断诱导出 Student 不会但 Teacher 能教的 states；训练一段时间后，这些区域已经被吸收，再继续采样的价值会下降。
 
 因此：
 
-$$
-\boxed{
-\mathrm{Quality}_t(q)
-\neq
-\mathrm{Quality}_{t+k}(q)
-}
-$$
+> **Useful State 不是 state 自身的固定属性，而是一个 student-dependent learning opportunity。**
 
-进一步提出动态过程：
+---
+
+# 4. What might make a State useful?
+
+当前不预设一个最终正确的 Useful State 公式，而是把以下五类信号视为 **candidate predictors**。
+
+| Signal | 想回答的问题 | 可能的 proxy |
+| --- | --- | --- |
+| **Novelty** | 这个 region 是否已经被大量访问？ | hidden-state distance、cluster coverage、behavioral embedding |
+| **Information** | Teacher 是否有 Student 尚未掌握的信息？ | JS/KL gap、top-k log-prob gap |
+| **Exploitability** | Student 能否利用 Teacher supervision？ | high-probability token overlap、local gradient alignment |
+| **Reliability** | Teacher 在这个 Student-induced state 上是否仍可信？ | verifier、self-consistency、multi-teacher agreement、execution feedback |
+| **Relevance** | 这个 state 是否属于目标能力？ | target-state similarity、domain classifier、task verifier |
+
+为了方便讨论，可以把它抽象写成：
+
+$$ U_t(s) = f\!\left(N_t(s), I_t(s), E_t(s), L_t(s), R_t(s)\right) $$
+
+但这里的 $f$ **不是本文预先假设好的固定函数**。
+
+一个关键研究问题正是：
+
+> **哪些信号真正与 state 的实际 learning gain 相关？它们应该作为 filter、ranking signal，还是被联合建模？**
+
+这比直接手工设定一个乘法或加法公式更重要。
+
+---
+
+# 5. Operationalization：先验证信号，再定义 USC
+
+一个容易犯的错误，是过早把 Useful State 定义成：
+
+$$ U(s) = N(s) \times I(s) \times E(s) \times L(s) \times R(s) $$
+
+这种写法直观，但会引入几个问题：
+
+- 不同 proxy 的量纲和校准方式不同；
+- proxy 之间可能高度相关；
+- 一个 noisy factor 可能让最终分数失真；
+- Reliability / Relevance 可能更适合作为 gate，而不是连续权重；
+- Novelty 可能奖励罕见但无意义的异常 state。
+
+因此，本文把下面几种方式视为 **待比较的 operationalizations**，而不是最终定义。
+
+### A. Gate + ranking
+
+先用 Relevance / Reliability / Exploitability 过滤明显无效 states，再用 Information 和 Novelty 做 ranking。
+
+### B. Learned utility model
+
+用少量真实 OPD gain 数据监督一个函数：
+
+$$ \hat{U}_\phi(s) = f_\phi\!\left(N,I,E,L,R\right) $$
+
+检验它是否能预测 state / cluster 的真实 learning progress。
+
+### C. Direct local learning-progress oracle
+
+对少量 state 或 state cluster 做 micro-update，直接测量：
+
+$$ V(s) = L_{\mathrm{target}}(\theta) - L_{\mathrm{target}}\!\left(\theta - \eta \nabla \ell_{\mathrm{OPD}}(s)\right) $$
+
+这个量计算昂贵，但可以作为 proxy quality 的近似 oracle。
+
+因此本文的目标不是先宣布一个 USC 公式，而是先建立：
+
+$$ \text{State Signal} \rightarrow \text{Actual Learning Gain} $$
+
+之间是否存在稳定关系。
+
+---
+
+# 6. Useful State Coverage：一个工作性目标
+
+即使能够估计单个 state 的 utility，也不能简单把所有 state utility 相加。
+
+原因是重复访问同一 state region 的边际价值会下降。
+
+因此 Useful State Coverage 应同时包含两个概念：
+
+- **State Utility**：当前 Student 在某个 state / region 上有多少学习机会；
+- **Coverage**：有限 rollout budget 下，是否覆盖了不同的高价值区域，而不是反复访问同一区域。
+
+一个简单的工作性形式是：
+
+$$ \mathrm{USC}_t(Q) = \sum_{c \in \mathcal{C}} w_t(c)\,g\!\left(n_c(Q)\right) $$
+
+其中：
+
+- $c$：state region / cluster；
+- $w_t(c)$：该 region 在当前 Student 下的估计学习价值；
+- $n_c(Q)$：query 集合 $Q$ 对该 region 的访问次数；
+- $g(\cdot)$：具有 diminishing returns 的 coverage function。
+
+例如可以先用：
+
+$$ g(n) = 1 - e^{-\beta n} $$
+
+作为 baseline。
+
+需要强调：**这个式子是一个 operational baseline，而不是 USC 的最终理论定义。**
+
+本文真正希望检验的是：用 student-dependent utility 对 state coverage 进行加权，是否比 raw State Coverage 更能解释和预测 downstream OPD gain。
+
+---
+
+# 7. Probe before train：训练前如何发现 Useful States？
+
+定义 Useful State 只是问题的一半。
+
+更实际的问题是：
+
+> **正式训练前，我们如何知道一条 query 会把 Student 带到哪些有价值的 states？**
+
+由于 state 由 query 和当前 Student 联合产生：
+
+$$ s \sim P(s \mid q, \pi_S) $$
+
+仅靠 query 文本、embedding 或静态难度，很难准确判断其 OPD 价值。
+
+一个直接方案是先做少量 **pilot rollout**：
 
 ```text
-Select
-  ↓
-Train M steps
-  ↓
-Re-Probe
-  ↓
-Update State Utility
-  ↓
-Select New Queries
-  ↓
-Continue Training
+Candidate Queries
+        ↓
+Frozen Student
+        ↓
+Small Pilot Rollouts
+        ↓
+Visited States
+        ↓
+State Probes
+        ↓
+State Regions / Utility Estimate
+        ↓
+Query Selection
+        ↓
+Full OPD
 ```
 
-形成：
+这里 probing 阶段不更新 Student，只用于观察 query 对当前 Student 所诱导出的 state distribution。
 
-$$
-\boxed{
-\text{Explore}
-\rightarrow
-\text{Learn}
-\rightarrow
-\text{Re-score}
-\rightarrow
-\text{Explore}
-}
-$$
+这套方法成立的关键前提是：
 
-这使 OPD data selection 从一次性静态数据筛选，转化为 **Student-dependent active curriculum**。
+> **少量 pilot rollouts 足以预测 query 在完整 OPD 中的真实训练价值，并且 probing 成本明显低于被节省的训练成本。**
+
+这是本文最重要、也最容易被证伪的假设之一。
 
 ---
 
-# 10. 关键实验
+# 8. From query selection to marginal state-space coverage
 
-## Experiment 1：证明 Raw State Coverage 不等于 Learning Utility
+如果已经选了一组 query $Q$，新 query $q$ 的价值不应看它自己的绝对分数，而应看它带来了多少新的 useful coverage：
 
-构造或筛选具有相似 raw state coverage、但具有不同局部可学习性的 query groups：
+$$ \Delta \mathrm{USC}_t(q \mid Q) = \mathrm{USC}_t\!\left(Q \cup \{q\}\right) - \mathrm{USC}_t(Q) $$
 
-- **High Coverage / Low Information**：覆盖广，但 Student 基本已经会；
-- **High Information / Low Exploitability**：Teacher-Student gap 大，但 thinking pattern 不兼容；
-- **High Coverage / Low Reliability**：Student 进入 Teacher 不可靠的 state；
-- **Useful Coverage**：兼具新颖性、信息增益、可利用性和可靠性。
+如果进一步考虑 rollout 和 Teacher inference 成本，可以使用：
+
+$$ q^* = \arg\max_q \frac{\Delta \mathrm{USC}_t(q \mid Q)}{\mathrm{Cost}(q)} $$
+
+这和传统 semantic-diversity selection 有一个重要区别：
+
+> 两条 query 在文本语义上不同，不代表它们会把 Student 带到不同 states；反过来，两条表面相似的 query，也可能诱导出完全不同的错误路径和 state regions。
+
+因此，本研究真正关心的是 **model-induced diversity**，而不只是 query-space diversity。
+
+---
+
+# 9. Dynamic USC：Useful State 会随 Student 改变
+
+如果一个 state 在训练初期具有很大的 Teacher–Student gap，但 Student 已经在后续训练中吸收了该能力，它的 learning utility 应该下降。
+
+因此 USC 应该是时间相关的：
+
+$$ U_t(s), \quad \mathrm{USC}_t(Q) $$
+
+这自然导向一个动态流程：
+
+```text
+probe
+  ↓
+select
+  ↓
+train
+  ↓
+re-probe
+  ↓
+re-score / re-select
+```
+
+也就是：
+
+$$ \text{Explore} \rightarrow \text{Learn} \rightarrow \text{Re-score} \rightarrow \text{Explore} $$
+
+如果这一假设成立，OPD 数据选择将更接近一种 **state-space curriculum learning**，而不是训练前一次性构造静态 dataset。
+
+---
+
+# 10. Core research questions
+
+### RQ1. Raw State Coverage 是否足够？
+
+在 State Coverage 相近的情况下，Information / Exploitability / Reliability / Relevance 的差异是否仍能显著解释 downstream OPD gain？
+
+### RQ2. 哪些 state-level signals 最能预测真实 learning value？
 
 比较：
 
-$$
-\mathrm{corr}(\mathrm{StateCoverage},\Delta \mathrm{Performance})
-$$
+- Student loss / difficulty；
+- Teacher–Student KL / JS；
+- semantic novelty；
+- raw State Coverage；
+- high-probability token overlap；
+- verifier / reliability；
+- learned utility model；
+- micro-update learning progress。
 
-与：
+### RQ3. 少量 pilot rollout 能否预测 query value？
 
-$$
-\mathrm{corr}(\mathrm{USC},\Delta \mathrm{Performance})
-$$
+用每条 query 的 2 / 4 / 8 次 pilot rollout 估计 utility，再与真实 one-query OPD gain 做相关性分析。
 
-核心目标是证明：**State Coverage 是必要但不充分的指标。**
+### RQ4. Useful-State-aware query selection 是否更高效？
 
----
+在相同 query budget、Student rollout tokens 和 Teacher inference tokens 下，对比 Random、Difficulty、Semantic Diversity、Raw State Coverage、Gap-only 和 USC-aware selection。
 
-## Experiment 2：哪个 State Signal 最能预测真实 Learning Gain？
+### RQ5. Dynamic selection 是否优于一次性静态选择？
 
-对大量 query 做少量 pilot rollout，并计算：
-
-- semantic query diversity；
-- raw state coverage；
-- Teacher-Student divergence；
-- top-k overlap / overlap probability mass；
-- Teacher entropy / consistency；
-- relevance；
-- novelty；
-- USC。
-
-然后对单 query 或小 query set 进行真实 OPD，测量：
-
-$$
-\Delta \mathrm{Performance}(q)
-$$
-
-比较每种训练前 proxy 与真实 gain 的相关性和排序质量。
+随着 Student 学习后重新 probe / select，是否能减少已经被吸收的冗余 states？
 
 ---
 
-## Experiment 3：固定 Query Budget 的数据选择
+# 11. Experiment design
 
-固定：
+## Experiment 1：State Coverage ≠ Learning Utility
 
-$$
-|Q|\in\{1,4,16,64\}
-$$
+构造或筛选三类 query：
 
-比较：
+- **High-Coverage / Low-Learning**：覆盖广，但 Student 基本已掌握；
+- **High-Gap / Low-Exploitability**：Teacher–Student gap 大，但监督难以利用；
+- **High-Utility / Diverse**：有新信息、可利用、相关且覆盖不同 regions。
 
-| 方法 | Selection Principle |
-|---|---|
-| Random | 随机 |
-| Difficulty | 难度 |
-| Semantic Diversity | Query embedding diversity |
-| Raw State Coverage | 最大化 state coverage |
-| Gap-only | 最大 Teacher-Student divergence |
-| Exploitability-only | 最大 overlap / compatibility |
-| USC | 最大 Useful State Coverage |
-| Dynamic USC | 周期性重新选择 |
-| Full Data | Upper bound |
+比较不同指标与最终 $\Delta$Performance 的相关性。
 
-评价：
+目标不是证明 USC 一定成立，而是先验证：
 
-- downstream accuracy / pass rate；
-- full-data gain recovered；
-- rollout tokens；
+> **Raw State Coverage 是否存在系统性的解释缺口？**
+
+## Experiment 2：Pilot rollout 的预测能力
+
+对候选 query：
+
+1. 冻结初始 Student；
+2. 每条 query 做 2 / 4 / 8 次 pilot rollout；
+3. 计算候选 state signals；
+4. 真正进行 one-query OPD；
+5. 比较预测分数与真实 $\Delta$Performance。
+
+如果少量 probing 无法稳定预测真实 gain，那么 query pre-selection 的价值会明显下降。
+
+## Experiment 3：Query selection under equal budget
+
+Query budget：1 / 4 / 16 / 64。
+
+Baselines：
+
+- Random；
+- Difficulty；
+- Semantic Diversity；
+- Raw State Coverage；
+- Gap-only；
+- Static USC-aware；
+- Dynamic USC-aware；
+- Full Data。
+
+Metrics：
+
+- downstream accuracy / reward；
+- fraction of full-data gain；
+- Student rollout tokens；
 - Teacher inference tokens；
-- wall-clock cost。
+- wall-clock time；
+- learning efficiency。
+
+可以定义：
+
+$$ \mathrm{LearningEfficiency} = \frac{\Delta \mathrm{Performance}}{\mathrm{StudentTokens} + \alpha\,\mathrm{TeacherTokens}} $$
 
 ---
 
-## Experiment 4：Agent / Long-Horizon 场景
+# 12. Agent setting
 
-这是非常重要的扩展，因为 Paper I 已经提示 long-horizon OPD 可能存在局部监督退化问题。
+这个问题在 Agent 场景中可能更重要。
 
-在 Agent Tool Use 场景中，将 state 分类为：
+数学 reasoning 的 state 主要是 reasoning prefix；Agent 的 state space 还包括：
 
-- normal planning；
-- tool selection；
-- tool success；
-- tool failure；
-- retry；
-- recovery；
-- replanning；
-- malformed observation；
-- permission / constraint state。
+```text
+plan
+→ tool call
+→ malformed result
+→ wrong interpretation
+→ retry
+→ permission error
+→ replan
+→ recovery
+```
 
-研究：
+两个 Agent 数据集即使都有 1,000 个任务，也可能产生完全不同的 state distribution。
 
-> Raw trajectory coverage 是否会因为大量 failure/noisy state 被高估？USC 能否更准确地选择真正提升 Agent 能力的 queries？
+一个数据集可能几乎都是：
 
----
+```text
+correct plan → successful tool call → answer
+```
 
-# 11. Compute-aware Learning Efficiency
+另一个数据集则覆盖：
 
-“One training example”并不意味着训练成本只有一个样本，因为 OPD 仍需要大量 rollout 和 Teacher forward。
+```text
+tool failure
+partial observation
+wrong action
+recovery
+memory conflict
+replanning
+```
 
-因此定义：
-
-$$
-\boxed{
-\mathrm{LearningEfficiency}
-=
-\frac{
-\Delta \mathrm{Performance}
-}{
-\mathrm{StudentRolloutTokens}
-+
-\alpha\,\mathrm{TeacherTokens}
-}
-}
-$$
-
-最终目标不是单纯减少 query 数，而是：
-
-> **在固定 compute budget 下，把 Student 带到最值得学习的 state。**
+因此，对 Agent 学习来说，Task Coverage 也可能不是最合适的数据质量度量；**Useful Agent State Coverage** 可能更接近真正的 learning opportunity coverage。
 
 ---
 
-# 12. 预期贡献
+# 13. What would falsify this idea?
 
-## C1. Conceptual：从 State Coverage 到 State Learning Utility
+这个方向需要明确可证伪条件。
 
-Paper II 将 OPD 数据单位从 query 下沉到 state。
+如果实验发现：
 
-本文进一步提出：
+- Raw State Coverage 已经足以稳定预测 OPD gain；
+- Exploitability / Reliability / Relevance 等额外信号无法增加解释力；
+- 少量 pilot rollout 无法预测完整训练价值；
+- probing 成本接近甚至超过节省下来的训练成本；
+- USC-aware selection 在相同 compute budget 下不优于简单 baseline；
 
-$$
-\boxed{
-\text{Query Diversity}
-\rightarrow
-\text{State Coverage}
-\rightarrow
-\text{Useful State Coverage}
-}
-$$
+那么 Useful State Coverage 作为独立研究目标的必要性就会显著下降。
 
-即 state 本身也不是等价的训练单位。
-
-## C2. Mechanistic：连接 Coverage 与 Learnability
-
-将 Paper I 的 **Teacher-Student compatibility / exploitability** 与 Paper II 的 **state coverage** 统一到一个框架中。
-
-核心观点：
-
-$$
-\boxed{
-\text{Effective Data}
-=
-\text{Reach Useful States}
-+
-\text{Learn Effectively at Those States}
-}
-$$
-
-## C3. Metric：Useful State Coverage
-
-提出一个能够同时考虑：
-
-- novelty；
-- information gain；
-- exploitability；
-- reliability；
-- task relevance；
-
-的 state-level 数据价值指标。
-
-## C4. Algorithm：Training-before-Training Query Selection
-
-正式 OPD 前，仅使用冻结 Student 的少量 pilot rollout：
-
-$$
-\text{Probe}
-\rightarrow
-\text{Diagnose}
-\rightarrow
-\text{Select}
-\rightarrow
-\text{Train}
-$$
-
-无需 full-data OPD reference。
-
-## C5. Dynamic Data Quality
-
-提出 OPD 数据质量是 Student-dependent 的动态属性，并进一步研究 Dynamic USC / active curriculum。
+反过来，如果 raw coverage 接近的 query 集合表现出明显不同的训练收益，而这种差异可以由 student-dependent learning signals 稳定解释，那么 USC 才真正具有研究价值。
 
 ---
 
-# 13. 最核心的 Paper Story
+# 14. Expected contribution
 
-整个 story 可以压缩成三步：
+如果上述假设成立，本文希望形成以下贡献：
 
-### Paper I
+1. **Conceptual**：把 OPD 数据质量从 query-level 静态属性转向 student-dependent state learning opportunity；
+2. **Empirical**：系统验证 Raw State Coverage 与真实 Learning Utility 的差异；
+3. **Measurement**：比较哪些 state-level proxies 最能预测实际 learning gain；
+4. **Method**：提出 probe-before-train 的 state-aware query selection；
+5. **Dynamic selection**：探索 Student 学习过程中重新估计 state utility 的动态 curriculum；
+6. **Generalization**：把 state-space 数据质量视角扩展到 Agent tool-use / recovery 等场景。
 
-> **到了这个 state，Teacher 的信号 Student 学得进去吗？**
+一句话概括：
 
-### Paper II
-
-> **这些 query 能把 Student 带到哪些 state？**
-
-### Our Work
-
-> **有限预算下，Student 应该被带到哪些 state？**
-
-因此本文不是简单给 State Coverage 加权，而是把 OPD 数据选择重新定义为：
-
-$$
-\boxed{
-\text{Data Selection}
-=
-\text{State Exploration}
-+
-\text{Local Learnability}
-}
-$$
-
-一句话 headline：
-
-> **Not all visited states are worth learning from. The best OPD queries are those that induce novel states where the teacher has reliable new information and the student can actually exploit it.**
-
----
-
-# 14. Candidate Titles
-
-首选：
-
-**Not All States Are Equal: Learning-Utility-Aware Data Selection for On-Policy Distillation**
-
-备选：
-
-- **Beyond State Coverage: Which States Are Worth Learning in On-Policy Distillation?**
-- **From State Coverage to State Utility: Rethinking Data Quality for On-Policy Distillation**
-- **Where Should the Student Learn? Useful State Coverage for Data-Efficient On-Policy Distillation**
+> **OPD 中最有价值的 query，不一定是文本上最复杂、最困难或最多样的 query，而可能是那些能够把当前 Student 带到新的、相关的、Teacher 可靠且 Student 真正能够学习的 state regions 的 query。**
 
 ---
 
 # References
 
-1. Yaxuan Li, Yuxin Zuo, Bingxiang He, et al. **Rethinking On-Policy Distillation of Large Language Models: Phenomenology, Mechanism, and Recipe.** arXiv:2604.13016, 2026. https://arxiv.org/abs/2604.13016
-2. Zixuan Fu, Bingxiang He, Yuxin Zuo, et al. **Rethinking On-Policy Distillation of Large Language Models II: One Training Example.** arXiv:2609.04172, 2026. https://arxiv.org/abs/2609.04172
+1. Yaxuan Li et al. **Rethinking On-Policy Distillation of Large Language Models: Phenomenology, Mechanism, and Recipe.** arXiv:2604.13016, 2026.  
+   https://arxiv.org/abs/2604.13016
+2. Zixuan Fu et al. **Rethinking On-Policy Distillation of Large Language Models II: One Training Example.** arXiv:2609.04172, 2026.  
+   https://arxiv.org/abs/2609.04172

@@ -16,8 +16,6 @@ Taken together, they suggest a broader question:
 
 > If a small number of queries can induce many states, and effective distillation depends on whether the Student can use the Teacher signal, what actually makes an OPD example valuable?
 
-Below is my current answer.
-
 ---
 
 ## A state-space view of OPD
@@ -54,7 +52,7 @@ State 1, State 2, State 3, ...
 Teacher supervision
 ```
 
-That small shift in perspective changes how we should think about the amount of training data in OPD.
+That shift in perspective changes how we should think about the amount of training data in OPD.
 
 A single query can produce many rollouts, and every rollout contains many prefixes. With stochastic sampling, the same query can move the Student into different local states.
 
@@ -62,7 +60,7 @@ This is what makes *One Training Example* so surprising.
 
 The paper shows that one-query OPD can train for hundreds of steps and recover a large fraction of the gain from full-data OPD. More importantly, when the authors cluster visited states using Teacher hidden representations, they find that **a single query reaches about 71.5% of the state-space coverage of full-data OPD; 16 semantically diverse queries reach about 98.9%, while matching full-data performance closely.**
 
-To me, the strongest implication is:
+The stronger implication is:
 
 > **State-space coverage may be a better proxy for effective OPD data volume than query count alone.**
 
@@ -72,7 +70,7 @@ The query acts more like a seed; the continuing learning opportunities come from
 
 ## One training example is not one training state
 
-This is one contrast worth keeping: **one training example is not one training state**.
+**One training example is not one training state.**
 
 The authors also test content-light templates and even some off-domain WildChat prompts. Certain seeds that look only weakly related to mathematics can still produce OPD gains close to those from genuine math queries.
 
@@ -84,7 +82,7 @@ So a more informative data-selection question is:
 
 > **Where does this query take the current Student?**
 
-That is why I find State Coverage useful. It moves the idea of coverage from query space toward model-induced state space.
+This is why State Coverage is useful: it moves the idea of coverage from query space toward model-induced state space.
 
 The next step is to ask how much learning value those visited states actually carry.
 
@@ -106,7 +104,7 @@ Consider three states.
 
 All three states count toward raw coverage, but they represent very different learning opportunities.
 
-I therefore think of State Coverage as the first layer: it tells us which regions were visited. The second layer asks how valuable those regions are for the current Student.
+State Coverage can therefore be treated as the first layer: it tells us which regions were visited. The second layer asks how valuable those regions are for the current Student.
 
 This is where the other OPD paper becomes important.
 
@@ -117,8 +115,6 @@ This is where the other OPD paper becomes important.
 [*Rethinking On-Policy Distillation of Large Language Models: Phenomenology, Mechanism, and Recipe*](https://arxiv.org/abs/2604.13016) studies when OPD succeeds and when it fails.
 
 One of its most useful observations is that **a stronger Teacher is not necessarily a better Teacher for a given Student**.
-
-I would keep this negative formulation because it corrects a very natural intuition.
 
 Successful OPD appears to depend on at least two things:
 
@@ -131,7 +127,7 @@ This means Teacher–Student divergence captures only one part of the learning o
 
 A large gap can mean the Teacher knows something the Student does not. It can also mean the two policies are locally so misaligned that the dense Teacher signal is difficult for the Student to absorb.
 
-So I think we need to separate two questions:
+Two questions therefore need to be separated:
 
 **Is there new information here?**
 
@@ -145,13 +141,13 @@ Together, those two dimensions help characterize whether a state is worth traini
 
 ## What I mean by a “Useful State”
 
-Putting the two papers together, I would currently define a Useful State as a **student-dependent learning opportunity**.
+Putting the two papers together, a Useful State can be viewed as a **student-dependent learning opportunity**.
 
 Its value depends on the current Student, the Teacher, the target task, and which regions have already been covered.
 
 A state can be valuable for a weak Student and much less useful for a Student that has already mastered that region. The value can also change if we swap the Teacher or change the target capability.
 
-I currently think about five signals:
+Five signals seem especially relevant:
 
 | Signal | Question | Possible proxy |
 | --- | --- | --- |
@@ -215,7 +211,7 @@ Query Selection
 Full OPD
 ```
 
-I think of this as **probe before train**.
+This is a **probe before train** workflow.
 
 There is a real trade-off here: pilot rollout still consumes Student sampling and Teacher inference. The approach becomes useful when a small pilot budget—say 2, 4, or 8 rollouts—predicts full-training value well enough to save more compute than it costs.
 
@@ -338,7 +334,7 @@ This makes Useful State Coverage a broader on-policy learning question:
 
 The main risk is that “Useful State Coverage” becomes a concept that sounds reasonable but is hard to falsify.
 
-So the next step should be a small set of direct experiments.
+The next step should be a small set of direct experiments.
 
 **First**, measure how much raw State Coverage already explains. Find query sets with similar state coverage but different Teacher–Student gap, compatibility, or task relevance, and compare downstream OPD gain.
 
@@ -368,11 +364,11 @@ And the practical follow-up is:
 
 > **Can we tell, before spending the full training budget, which queries are likely to take the Student there?**
 
-Those questions seem more important to me than committing too early to a particular Useful State formula.
+Those two questions matter more than committing too early to a particular Useful State formula.
 
 If the idea holds up, OPD data engineering may gradually shift toward dynamic state-space exploration: identify where the current Student still has clear learning opportunities, route more budget toward those regions, absorb the signal, then move on.
 
-That is what I currently mean by **Useful State Coverage**.
+That is the working idea behind **Useful State Coverage**.
 
 ---
 

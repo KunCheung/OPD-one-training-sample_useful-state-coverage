@@ -1,59 +1,94 @@
 # OPD One-Training-Sample → Useful State Coverage
 
-本仓库记录一个基于 **On-Policy Distillation（OPD）** 的研究想法：从原论文提出的 **State Coverage** 出发，进一步研究 **哪些 state 真正值得学习，以及如何在正式训练前识别这些 state**。
+This repository explores a working hypothesis for **On-Policy Distillation (OPD)**:
 
-## 研究起点
+> **OPD data quality may be better understood in the state space induced by the current Student, rather than only in the query space.**
 
-本项目主要受到两篇工作启发：
+The idea is motivated by two recent works:
 
-> Yaxuan Li et al.  
-> **Rethinking On-Policy Distillation of Large Language Models: Phenomenology, Mechanism, and Recipe.**  
-> arXiv:2604.13016, 2026.  
-> https://arxiv.org/abs/2604.13016
+- **Yaxuan Li et al.**  
+  *Rethinking On-Policy Distillation of Large Language Models: Phenomenology, Mechanism, and Recipe*  
+  arXiv:2604.13016, 2026  
+  https://arxiv.org/abs/2604.13016
 
-> Zixuan Fu et al.  
-> **Rethinking On-Policy Distillation of Large Language Models II: One Training Example.**  
-> arXiv:2609.04172, 2026.  
-> https://arxiv.org/abs/2609.04172
+- **Zixuan Fu et al.**  
+  *Rethinking On-Policy Distillation of Large Language Models II: One Training Example*  
+  arXiv:2609.04172, 2026  
+  https://arxiv.org/abs/2609.04172
 
-两篇工作的核心启发分别是：
+The first suggests that **Teacher information is not automatically exploitable by the Student**. The second shows that **few queries can still induce a surprisingly broad set of Student-visited states**.
 
-- **Paper I**：Teacher 有信息，不等于 Student 能利用这些信息；OPD 是否成功与 Teacher–Student compatibility / exploitability 密切相关。
-- **Paper II**：少量 Query 并不等于少量训练状态；一个 Query 可以通过 rollout 诱导出大量 states，State Coverage 比 Query Count 更接近 OPD 的有效数据规模。
+Taken together, they motivate a question:
 
-本项目进一步追问：
+> **If query count is not the right unit of data, and raw State Coverage does not tell us whether a state is actually learnable, what should high-quality OPD data mean?**
 
-> **State Coverage 是否足以代表数据质量？如果不是，能否在正式训练前估计 Useful State Coverage，并用它选择真正高价值的少量 query？**
-
-## 核心思路
+## Working view
 
 ```text
-Query Diversity
-      ↓
+Query
+  ↓
+Student-induced States
+  ↓
 State Coverage
-      ↓
+  ↓
+State Learning Utility
+  ↓
 Useful State Coverage
-      ↓
-Dynamic Student-Dependent Data Selection
+  ↓
+Dynamic State-Space Data Selection
 ```
 
-一个 query 的价值不应只由其文本本身、难度或语义多样性决定，而应由它对当前 Student 所诱导出的 **有学习价值的 state** 决定。
+A **Useful State** is not treated here as a fixed property of the state itself. It is a **student-dependent learning opportunity**: its value may depend on the current Student, the Teacher, previously visited states, and the target capability.
 
-## 内容
+We currently consider several candidate signals:
+
+- **Novelty** — is this state region already heavily covered?
+- **Information** — does the Teacher contain something the Student has not yet learned here?
+- **Exploitability** — can the Student actually use the Teacher signal?
+- **Reliability** — is the Teacher still trustworthy on this Student-induced state?
+- **Relevance** — does this state matter for the target capability?
+
+These are **candidate signals, not a finalized USC formula**. A central research question is which of them actually predict downstream learning gain.
+
+## Probe before train
+
+Because states are induced by Student rollouts, query value cannot be judged reliably from query text alone. A practical direction is:
+
+```text
+Candidate Queries
+        ↓
+Frozen Student
+        ↓
+Small Pilot Rollouts
+        ↓
+Visited States
+        ↓
+State Probes
+        ↓
+Useful State Regions
+        ↓
+Query Selection
+        ↓
+Full OPD
+```
+
+The key empirical assumption is that **a small number of pilot rollouts can predict the training value of a query well enough to justify their cost**.
+
+## Repository contents
 
 - [中文研究 Proposal](./PROPOSAL.zh-CN.md)
 - [中文技术 Blog：One Query, Many States](./BLOG.zh-CN.md)
 - [English Blog: One Query, Many States](./BLOG.en.md)
 
-## 当前研究问题
+## Main research questions
 
-1. 如何定义 useful state？
-2. 如何在 full OPD training 之前估计 useful state？
-3. Raw State Coverage 与 downstream gain 的相关性是否足以支持其作为数据质量指标？
-4. 如何同时建模 state novelty、information gain、exploitability、teacher reliability 和 task relevance？
-5. 能否用少量 pilot rollout 预测 query 的真实训练价值？
-6. 能否在相同 query / rollout / teacher-compute budget 下优于 semantic-diversity selection？
+1. Is raw State Coverage sufficient to explain OPD gain?
+2. What makes a Student-visited state useful for learning?
+3. Which pre-training signals best predict actual state-level or query-level learning gain?
+4. Can a few pilot rollouts estimate query value before full OPD training?
+5. Can Useful-State-aware selection outperform random, semantic-diversity, raw-coverage, and gap-based selection under the same compute budget?
+6. Should data selection be dynamic as the Student absorbs previously useful states?
 
 ## Status
 
-Research idea / early-stage proposal.
+Research idea / early-stage proposal. The current goal is to turn the state-space view into **testable hypotheses**, rather than assume a fixed USC metric in advance.

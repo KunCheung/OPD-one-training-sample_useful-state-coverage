@@ -42,7 +42,8 @@ Dynamic Student-Dependent Data Selection
 ## 内容
 
 - [中文研究 Proposal](./PROPOSAL.zh-CN.md)
-- [中文技术 Blog：从 One Training Example 到 Useful State Coverage](./BLOG.zh-CN.md)
+- [中文技术 Blog：One Query, Many States](./BLOG.zh-CN.md)
+- [English Blog: One Query, Many States](./BLOG.en.md)
 
 ## 当前研究问题
 

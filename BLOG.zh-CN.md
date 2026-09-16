@@ -34,15 +34,11 @@ prompt → reference response
 
 OPD 不一样。Student 先从当前 policy 自己 rollout：
 
-$$
-y \sim \pi_S(\cdot|x)
-$$
+$$ y \sim \pi_S(\cdot \mid x) $$
 
 Teacher 再对 Student 实际产生的 prefix 提供 token-level supervision。对第 $t$ 个 token 来说，Teacher 看到的 state 是：
 
-$$
-s_t=(x,y_{<t})
-$$
+$$ s_t = (x, y_{1:t-1}) $$
 
 这意味着，真正接受监督的并不是最开始那一条 query，而是 Student rollout 过程中不断产生的 states。
 
@@ -141,9 +137,7 @@ State Coverage 回答的是：**Student 去过哪些地方？**
 
 一个很自然的想法是：
 
-$$
-D(\pi_T,\pi_S) \text{ 越大} \Rightarrow \text{Student 有越多东西可学}
-$$
+$$ D(\pi_T,\pi_S) \text{ 越大} \Rightarrow \text{Student 有越多东西可学} $$
 
 但这个推论并不总成立。
 
@@ -181,9 +175,7 @@ Gap 大可能意味着 Teacher 知道 Student 不知道的东西；也可能意�
 
 如果一定要写成一个抽象形式，可以记成：
 
-$$
-U(s)=f\big(N(s),I(s),E(s),L(s),R(s)\big)
-$$
+$$ U(s) = f\big(N(s), I(s), E(s), L(s), R(s)\big) $$
 
 但我并不认为现在把这五项乘起来、加起来，就得到了一个正确的 Useful State metric。
 
@@ -205,9 +197,7 @@ $$
 
 这是一个有点麻烦的问题，因为 state 本身不是静态数据。它由 query 和当前 Student 一起产生：
 
-$$
-s \sim P(s\mid q,\pi_S)
-$$
+$$ s \sim P(s \mid q, \pi_S) $$
 
 只看 query 文本，很难知道 Student 最后会走到哪里。
 
@@ -261,14 +251,9 @@ Full OPD
 
 所以 “Coverage” 仍然重要。
 
-一种简单的形式是先把 states 聚成若干 region $c\in\mathcal C$，再给每个 region 一个学习价值 $w_c$：
+一种简单的形式是先把 states 聚成若干 region $c\in\mathcal{C}$，再给每个 region 一个学习价值 $w_c$：
 
-$$
-\mathrm{USC}(Q)
-=
-\sum_{c\in\mathcal C}
- w_c\,g\big(n_c(Q)\big)
-$$
+$$ \mathrm{USC}(Q) = \sum_{c\in\mathcal{C}} w_c\,g\!\left(n_c(Q)\right) $$
 
 这里 $n_c(Q)$ 是 query 集合 $Q$ 对 region $c$ 的访问次数，$g$ 是一个具有 diminishing returns 的函数。
 
@@ -291,12 +276,7 @@ $$
 
 但 OPD 中，一条 query 的价值更像是条件性的：
 
-$$
-\mathrm{Quality}
-\left(
-q\mid\pi_S,\pi_T,Q_{\mathrm{selected}},\mathcal T
-\right)
-$$
+$$ \mathrm{Quality}\!\left(q \mid \pi_S, \pi_T, Q_{\mathrm{selected}}, \mathcal{T}\right) $$
 
 同一条 query，在不同训练阶段可能完全不是同一个价值。
 
@@ -318,12 +298,7 @@ probe → select → train → re-probe → re-select
 
 如果已经选了一组 query $Q$，新 query $q$ 的价值也不应该看它自己的绝对分数，而应该看它能带来多少新的 useful coverage：
 
-$$
-\Delta \mathrm{USC}(q)
-=
-\mathrm{USC}(Q\cup\{q\})-
-\mathrm{USC}(Q)
-$$
+$$ \Delta \mathrm{USC}(q) = \mathrm{USC}\!\left(Q \cup \{q\}\right) - \mathrm{USC}(Q) $$
 
 这个区别很重要。
 
